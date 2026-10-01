@@ -65,7 +65,7 @@ For Render, set the service's `ADMIN_TOKEN` environment variable to `token`, the
 
 ```bash
 export ADMIN_TOKEN=token
-./burst.sh https://YOUR-RENDER-APP.onrender.com
+./burst.sh https://paytm-seat-reservation-qiq4.onrender.com
 ```
 
 The script waits for `/health/ready`; it requires `bash`, `curl`, `python3`, and `xargs`. Each run creates a new show and multiple user accounts, so use a test deployment and expect those records to remain in the database. The hot-seat test starts one worker per `HOT_USERS` request (500 by default); a machine or hosting plan with strict process/connection limits may need a smaller test size:
@@ -107,7 +107,7 @@ Success ends with `DONE show_id=...`, one `201` and the rest `409` for the hot s
 
 ### Metrics
 
-Live endpoint: `https://YOUR-RENDER-APP.onrender.com/actuator/prometheus`
+Live endpoint: `https://paytm-seat-reservation-qiq4.onrender.com/actuator/prometheus`
 
 It exposes confirmed reservations, declined reservations by reason, and an available-seat gauge queried from the current PostgreSQL seat state.
 
@@ -117,7 +117,7 @@ curl http://localhost:8080/actuator/prometheus
 
 ### Logs
 
-Live endpoint: `https://YOUR-RENDER-APP.onrender.com/logs`
+Live endpoint: `https://paytm-seat-reservation-qiq4.onrender.com/logs`
 
 This returns up to 500 recent sanitized reservation/business events, newest first. The default response contains the latest 100 events; use `?limit=500` for the maximum.
 
