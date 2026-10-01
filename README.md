@@ -10,7 +10,7 @@ Set these environment variables in IntelliJ (or your shell) using your Neon conn
 DATABASE_URL=jdbc:postgresql://<neon-host>/<database>?sslmode=require
 DATABASE_USERNAME=<neon-user>
 DATABASE_PASSWORD=<neon-password>
-ADMIN_TOKEN=<unique-admin-token>
+ADMIN_TOKEN=token
 ```
 
 Then start `PaytmAssignmentApplication` from IntelliJ or run:
@@ -37,17 +37,44 @@ Compose supplies a local-only admin token (`local-compose-admin-token`) by defau
 ./mvnw clean package
 ```
 
-This compiles and packages the application without requiring a running database. The repository does not currently include automated JUnit tests; use the burst script against a running service for API and concurrency checks.
+This compiles and packages the application without requiring a running database.
 
-## Run the burst test
+## One-command burst test
 
-With the local app running:
+`burst.sh` creates a fresh show and test users, then checks a concurrent hot-seat storm, same-key idempotency and mismatched-body handling, the per-user limit, owner-only cancellation and seat rebooking, final seat-count reconciliation, and Prometheus metrics. It prints the HTTP outcome counts and exits non-zero if a correctness assertion fails.
+
+Run it against the local Compose service:
 
 ```bash
 ./burst.sh http://localhost:8080
 ```
 
-It exercises concurrent hot-seat reservations, concurrent same-key retries, the per-user limit, owner-only cancellation and seat release, token-derived identity, metrics, and final seat reconciliation. If you override `ADMIN_TOKEN` when starting Compose, export that same value before running the script.
+For these examples, configure the app with the admin token value `token`. Start Compose with that value:
+
+```bash
+ADMIN_TOKEN=token docker compose up --build
+```
+
+Then run the burst script:
+
+```bash
+ADMIN_TOKEN=token ./burst.sh http://localhost:8080
+```
+
+For Render, set the service's `ADMIN_TOKEN` environment variable to `token`, then run:
+
+```bash
+export ADMIN_TOKEN=token
+./burst.sh https://YOUR-RENDER-APP.onrender.com
+```
+
+The script waits for `/health/ready`; it requires `bash`, `curl`, `python3`, and `xargs`. Each run creates a new show and multiple user accounts, so use a test deployment and expect those records to remain in the database. The hot-seat test starts one worker per `HOT_USERS` request (500 by default); a machine or hosting plan with strict process/connection limits may need a smaller test size:
+
+```bash
+HOT_USERS=50 LIMIT_USERS=8 ./burst.sh http://localhost:8080
+```
+
+Success ends with `DONE show_id=...`, one `201` and the rest `409` for the hot seat, zero `5xx`, and a passing reconciliation invariant. The script prints a metrics snapshot as well. A failed assertion or unavailable service exits non-zero.
 
 ## Environment variables
 
@@ -102,4 +129,4 @@ Events include timestamp, request ID, event type, show/user/reservation IDs when
 
 ## Deployment
 
-Deploy the Dockerfile as a Render Web Service and connect it to a Neon PostgreSQL database. Set `DATABASE_URL` to a JDBC-form PostgreSQL URL (for Neon, include `?sslmode=require`), and set `DATABASE_USERNAME`, `DATABASE_PASSWORD`, and a unique `ADMIN_TOKEN` in Render's environment settings. The app has no default admin token and will not start unless one is configured. Render provides `PORT`; the app listens on it.
+Deploy the Dockerfile as a Render Web Service and connect it to a Neon PostgreSQL database. Set `DATABASE_URL` to a JDBC-form PostgreSQL URL (for Neon, include `?sslmode=require`), and set `DATABASE_USERNAME`, `DATABASE_PASSWORD`, and `ADMIN_TOKEN=token` in Render's environment settings. The app has no default admin token and will not start unless one is configured. Render provides `PORT`; the app listens on it. `token` is a simple assignment/demo value; use a strong unique value for any non-demo deployment.

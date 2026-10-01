@@ -1,58 +1,62 @@
-# WRITEUP
+# Seat Reservation Design
 
 ## Atomic decision
 
-The seat assignment decision is a single database transaction in `ReservationService.reserve`:
+PostgreSQL is the source of truth. `ReservationService.reserve` runs in one database transaction and makes the reservation decision while holding database row locks:
 
-1. **PostgreSQL pessimistic write lock on the existing user row** — serializes one user's concurrent reserve calls so the per-user seat limit cannot be raced. Using an existing row avoids a race while creating a separate lock record.
-2. **Pessimistic lock on requested seats `ORDER BY seat_label`** (`LockModeType.PESSIMISTIC_WRITE`) — takes row locks on exactly the requested seats in a **global lexicographic order**.
-3. In that locked snapshot: reject if any seat is not `AVAILABLE` (all-or-nothing); reject if `active_seats + requested > per_user_limit`; otherwise mark seats `CONFIRMED` and insert the reservation.
+1. It first checks for a prior reservation with the same user, show, and idempotency key.
+2. It obtains a `PESSIMISTIC_WRITE` lock on the authenticated user's existing row. This serializes that user's reservation attempts, including attempts using different keys, so two concurrent requests cannot both pass the per-user limit check.
+3. It locks all requested seat rows for the show using `PESSIMISTIC_WRITE`, ordered by `seat_label`.
+4. While those locks are held, it rejects the whole request if any seat is not `AVAILABLE` or if the user's active seat count plus the requested count exceeds the limit. Otherwise it inserts the reservation and marks every requested seat `CONFIRMED`. Both changes commit together.
 
-Why this is race-free: two transactions cannot both observe the same seat as `AVAILABLE` under a pessimistic write lock. The second waiter sees `CONFIRMED`/`HELD` and returns **409**, never a second confirmation and never a 500.
+For a hot seat, transactions queue on that seat's database row. The first transaction to commit changes the state; a waiter then observes the non-available state and receives a 409 rather than creating another reservation. Database transaction rollback keeps the reservation and seat state from being partially committed.
 
-### Multi-seat / deadlock avoidance
+### Multi-seat requests and deadlocks
 
-Every reserve sorts seat labels before locking. All transactions acquire seat locks in the same total order, so the classic A1↔A2 lock-order deadlock cannot occur. Partial success is not used: if any seat in the request is unavailable, the whole request declines with `SEAT_TAKEN` (all-or-nothing). Documented behaviour; holds under concurrency because the check happens while holding locks on the full set.
+Requests are normalized, deduplicated, and sorted by seat label before locking. All reserve and cancel operations acquire seat locks in that same order, which avoids cycles caused by transactions locking the same seats in opposite orders. The request is all-or-nothing: if any requested seat is missing or unavailable, none of the requested seats are reserved.
 
 ## Idempotency
 
-- Stored in PostgreSQL on `reservations` as `(user_id, show_id, idempotency_key)` with a **UNIQUE** constraint, plus a `request_hash` (SHA-256 of the normalized sorted seat list).
-- Same key + same body → return the original reservation (counted as `idempotent_replay` in metrics; HTTP 201).
-- Same key + different seats → **409** `IDEMPOTENCY_KEY_REUSED`.
-- Concurrent same-key requests for one user serialize on the user-row lock. After waiting, the second transaction rechecks the unique-key lookup and replays the committed reservation. The unique constraint remains the durable database guard.
+The key and request hash are stored on the PostgreSQL `reservations` row. A database unique constraint on `(user_id, show_id, idempotency_key)` is the durable duplicate guard. The application trims the key and computes a SHA-256 hash over the normalized, sorted seat list.
 
-## Holds & expiry
+- Same user, show, key, and normalized seat set: return the existing reservation; do not create another reservation or increment the confirmed-reservations counter.
+- Same user, show, and key but a different normalized seat set: return 409 (`IDEMPOTENCY_KEY_REUSED`).
+- Concurrent attempts by the same user: the user-row lock serializes the operations, and the key lookup is repeated after acquiring that lock. The unique constraint remains the final database safeguard.
 
-Model chosen: **immediate confirmation + explicit cancel** (`POST /reservations/{id}/cancel`).
+This covers a client retry after a committed reservation whose response was lost: the retry receives the original reservation. There is no payment processor in this service, so no payment is charged; if payment is added, it will need its own idempotency key and transactional handoff.
 
-- Reserve → seats `confirmed`, reservation `confirmed` (matches the assignment success shape).
-- Cancel (owner only) → seats returned to `available`. A cancel never resurrects a seat already bound to a different `reservation_id` (release is gated on matching reservation id under row locks).
-- Schema still supports `HELD` / `expires_at` for a future soft-hold TTL without a migration rewrite.
+## Holds and expiry
 
-## Consistency vs availability under partition
+The active model is immediate confirmation with explicit owner-only cancellation. A successful reserve changes seats directly from `AVAILABLE` to `CONFIRMED`; it does not create a time-limited hold. Cancellation changes the reservation to `CANCELLED` and releases only seat rows whose `reservation_id` still matches that reservation, under seat-row locks. This prevents an old cancellation from releasing a seat assigned to another reservation.
 
-The application and tests use PostgreSQL as the only database. If PostgreSQL is unreachable, readiness fails closed (`/health/ready` → 503) and writes fail rather than using stale seat data. Clients should retry idempotently after connectivity returns.
+The schema and domain model have `HELD` and expiry fields for a possible future hold workflow, but there is no automatic hold expiry in the current API.
 
-## Observability (2am page)
+## Consistency vs. availability under a partition
 
-You would get paged for:
+PostgreSQL transactions and row locks coordinate all application instances. If the application cannot reach PostgreSQL, readiness fails (`/health/ready` reports unavailable) and reservation writes fail; the service does not make decisions from a local or stale seat copy. This favors consistency over availability during a database partition. Clients can retry after recovery using the same idempotency key.
 
-- Readiness flapping / PostgreSQL connection errors
-- Any rise in HTTP 5xx (domain declines must stay 4xx)
-- `available + held + confirmed != total_seats` (invariant; currently asserted on read)
-- Confirmed counter diverging from `confirmed` seat count after a burst
-- Saturation: Hikari pool wait, elevated reserve latency, lock wait spikes
+## Observability and 2am alerts
 
-Structured logs include `request_id` (`X-Request-Id`) and `user_id` in MDC. Metrics: `reservations_confirmed_total`, `reservations_declined_total{reason}`, `seats_available{show_id}`.
+The public `/actuator/prometheus` endpoint exposes confirmed-reservation and decline counters, including the decline reason, plus a `seats_available{show_id=...}` gauge derived from database seat state. The gauge is refreshed after committed seat changes and on startup; it is not an independently incremented inventory counter. `/logs` returns the newest sanitized business events from a thread-safe in-memory buffer capped at 500 entries. Structured reservation events are also written to standard application logs with the request ID. `X-Request-Id` is generated per request.
+
+At 2am, I would want alerts for:
+
+- Readiness failures, database connectivity errors, or connection-pool exhaustion.
+- Unexpected HTTP 5xx responses or elevated reservation latency and database lock waits. Seat-taken and limit outcomes are expected 409 domain responses, not server errors.
+- Any reconciliation mismatch between the show totals and its available, held, and confirmed seat counts.
+- A mismatch between committed reservation records and seat assignments, or an unexpected increase in duplicate-key / idempotency conflicts.
+
+Metrics and the event buffer are in-process observability, not durable audit storage: counters and recent logs reset on restart, and metrics from multiple app instances are instance-local. PostgreSQL remains authoritative for reservation and seat state. The current project exposes metrics and logs but does not provision an external alerting service or durable log store.
 
 ## AI usage
 
-- **Directed:** scaffolding Spring Boot layout, Dockerfile/Compose, Prometheus wiring, burst script structure, README/WRITEUP drafting.
-- **Decided by me:** atomic locking design (existing user row + seat pessimistic locks in label order), all-or-nothing multi-seat, immediate-confirm + cancel model, idempotency schema, package boundaries (api / application / domain / infrastructure), and the correctness bar the burst script asserts.
+**Directed by me:** the assignment requirements and correctness bar, the constraint to work within the existing Spring Boot project, and the request for public metrics and sanitized business logs without unrelated rewrites.
 
-## What I'd do next
+**AI-assisted decisions and work:** AI inspected the existing code, proposed and implemented the specific concurrency/idempotency approach described above, and helped revise the configuration, tests, and documentation. I directed the required outcomes, but I did not independently author every implementation detail or make every low-level design choice; the concrete mechanism documented here is the one implemented in the project.
 
-- Soft-hold TTL + payment confirm step; outbox for downstream tickets
-- Connection-pool / statement timeouts tuned from burst profiles
-- OpenTelemetry traces on the reserve path
-- Property-based / Jepsen-style concurrency suite in CI with Testcontainers
+## What I would do next
+
+1. Add integration tests against real PostgreSQL that race hot-seat, same-key, per-user-limit, and cancellation requests; run them repeatedly in CI.
+2. If adding payment, introduce a payment-provider idempotency key and an outbox so database commits and external side effects can be reconciled safely.
+3. Add durable centralized logs, distributed traces, and configured alerts/dashboards. Retain the current `/logs` endpoint as a bounded evaluator/debugging view, not an audit trail.
+4. Profile the deployed burst and tune database connection-pool size, lock/query timeouts, and request limits from measured behavior.
