@@ -22,10 +22,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
     protected void doFilterInternal(
             HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        String requestId = request.getHeader(HEADER);
-        if (requestId == null || requestId.isBlank()) {
-            requestId = UUID.randomUUID().toString();
-        }
+        String requestId = UUID.randomUUID().toString();
         MDC.put("request_id", requestId);
         response.setHeader(HEADER, requestId);
         try {

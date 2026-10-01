@@ -51,21 +51,21 @@ public class ReservationMetrics implements ApplicationRunner {
         recordDecline(DeclineReason.IDEMPOTENT_REPLAY);
     }
 
+    public void registerShow(UUID showId) {
+        refreshAvailableGauge(showId);
+    }
+
     public synchronized void refreshAvailableGauge(UUID showId) {
         availableGauges.computeIfAbsent(showId, id -> {
-            AtomicLong gauge = new AtomicLong(seatRepository.countByShowIdAndStatus(id, SeatStatus.AVAILABLE));
+            AtomicLong gauge = new AtomicLong();
             registry.gauge("seats_available", Tags.of("show_id", id.toString()), gauge, AtomicLong::get);
             return gauge;
         }).set(seatRepository.countByShowIdAndStatus(showId, SeatStatus.AVAILABLE));
     }
 
-    public void registerShow(UUID showId) {
-        refreshAvailableGauge(showId);
-    }
-
     @Override
     public void run(ApplicationArguments args) {
-        showRepository.findAll().forEach(show -> refreshAvailableGauge(show.getId()));
+        showRepository.findAll().forEach(show -> registerShow(show.getId()));
     }
 
     private static String mapReason(DeclineReason reason) {

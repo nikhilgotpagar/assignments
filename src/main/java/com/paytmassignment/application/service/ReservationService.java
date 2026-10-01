@@ -14,6 +14,7 @@ import com.paytmassignment.domain.repository.SeatRepository;
 import com.paytmassignment.domain.repository.ShowRepository;
 import com.paytmassignment.domain.repository.UserRepository;
 import com.paytmassignment.infrastructure.metrics.ReservationMetrics;
+import com.paytmassignment.infrastructure.observability.ReservationEventBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -26,6 +27,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -41,18 +43,21 @@ public class ReservationService {
     private final ReservationRepository reservationRepository;
     private final UserRepository userRepository;
     private final ReservationMetrics metrics;
+    private final ReservationEventBuffer events;
 
     public ReservationService(
             ShowRepository showRepository,
             SeatRepository seatRepository,
             ReservationRepository reservationRepository,
             UserRepository userRepository,
-            ReservationMetrics metrics) {
+            ReservationMetrics metrics,
+            ReservationEventBuffer events) {
         this.showRepository = showRepository;
         this.seatRepository = seatRepository;
         this.reservationRepository = reservationRepository;
         this.userRepository = userRepository;
         this.metrics = metrics;
+        this.events = events;
     }
 
     @Transactional
@@ -79,13 +84,14 @@ public class ReservationService {
 
         List<Seat> lockedSeats = seatRepository.lockByShowIdAndLabels(showId, seats);
         if (lockedSeats.size() != seats.size()) {
-            metrics.recordDecline(DeclineReason.UNKNOWN_SEAT);
+            recordDecline(
+                    DeclineReason.UNKNOWN_SEAT, "UNKNOWN_SEAT", showId, user.getId(), null, seats, 404);
             throw DomainException.notFound(DeclineReason.UNKNOWN_SEAT, "One or more seats do not exist for this show");
         }
 
         for (Seat seat : lockedSeats) {
             if (!seat.isAvailable()) {
-                metrics.recordDecline(DeclineReason.SEAT_TAKEN);
+                recordDecline(DeclineReason.SEAT_TAKEN, "SEAT_TAKEN", showId, user.getId(), null, seats, 409);
                 throw DomainException.conflict(
                         DeclineReason.SEAT_TAKEN,
                         "Seat already taken: " + seat.getSeatLabel());
@@ -94,7 +100,7 @@ public class ReservationService {
 
         long alreadyHeld = seatRepository.countActiveSeatsForUser(showId, user.getId());
         if (alreadyHeld + seats.size() > show.getPerUserLimit()) {
-            metrics.recordDecline(DeclineReason.PER_USER_LIMIT);
+            recordDecline(DeclineReason.PER_USER_LIMIT, "PER_USER_LIMIT", showId, user.getId(), null, seats, 409);
             throw DomainException.conflict(
                     DeclineReason.PER_USER_LIMIT,
                     "Per-user seat limit exceeded (limit=" + show.getPerUserLimit() + ")");
@@ -126,15 +132,9 @@ public class ReservationService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                metrics.recordConfirmed();
-                metrics.refreshAvailableGauge(showId);
-                log.info(
-                        "reservation_confirmed reservation_id={} show_id={} user_id={} seats={} amount_paise={}",
-                        reservationId,
-                        showId,
-                        user.getId(),
-                        seats,
-                        amountPaise);
+                safeObservation("confirmed_metric", metrics::recordConfirmed);
+                safeObservation("available_seats_gauge", () -> metrics.refreshAvailableGauge(showId));
+                recordEvent("RESERVATION_CONFIRMED", showId, user.getId(), reservationId, seats, 201);
             }
         });
 
@@ -176,12 +176,8 @@ public class ReservationService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                metrics.refreshAvailableGauge(showId);
-                log.info(
-                        "reservation_cancelled reservation_id={} show_id={} user_id={}",
-                        reservationId,
-                        showId,
-                        user.getId());
+                safeObservation("available_seats_gauge", () -> metrics.refreshAvailableGauge(showId));
+                recordEvent("CANCELLATION", showId, user.getId(), reservationId, labels, 200);
             }
         });
 
@@ -201,18 +197,59 @@ public class ReservationService {
 
     private ReservationResponse handleIdempotentReplay(Reservation existing, String requestHash) {
         if (!existing.getRequestHash().equals(requestHash)) {
-            metrics.recordDecline(DeclineReason.IDEMPOTENCY_KEY_REUSED);
+            recordDecline(
+                    DeclineReason.IDEMPOTENCY_KEY_REUSED,
+                    "IDEMPOTENCY_CONFLICT",
+                    existing.getShow().getId(),
+                    existing.getUserId(),
+                    existing.getId(),
+                    existing.getSeatLabels(),
+                    409);
             throw DomainException.conflict(
                     DeclineReason.IDEMPOTENCY_KEY_REUSED,
                     "Idempotency key was already used with a different seat set");
         }
-        metrics.recordIdempotentReplay();
-        log.info(
-                "idempotent_replay reservation_id={} user_id={} key={}",
-                existing.getId(),
+        safeObservation("idempotent_replay_metric", metrics::recordIdempotentReplay);
+        recordEvent(
+                "IDEMPOTENT_REPLAY",
+                existing.getShow().getId(),
                 existing.getUserId(),
-                existing.getIdempotencyKey());
+                existing.getId(),
+                existing.getSeatLabels(),
+                201);
         return toResponse(existing);
+    }
+
+    private void recordDecline(
+            DeclineReason reason,
+            String eventType,
+            UUID showId,
+            UUID userId,
+            UUID reservationId,
+            List<String> seats,
+            int httpStatus) {
+        safeObservation("decline_metric", () -> metrics.recordDecline(reason));
+        recordEvent(eventType, showId, userId, reservationId, seats, httpStatus);
+    }
+
+    private void recordEvent(
+            String eventType,
+            UUID showId,
+            UUID userId,
+            UUID reservationId,
+            List<String> seats,
+            int httpStatus) {
+        safeObservation(
+                "business_event",
+                () -> events.record(eventType, showId, userId, reservationId, seats, httpStatus));
+    }
+
+    private static void safeObservation(String observation, Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException ex) {
+            log.warn("observability_failure type={} request_id={}", observation, MDC.get("request_id"));
+        }
     }
 
     private void lockUser(UUID userId) {

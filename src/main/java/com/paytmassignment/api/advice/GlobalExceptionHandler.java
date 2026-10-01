@@ -3,7 +3,6 @@ package com.paytmassignment.api.advice;
 import com.paytmassignment.application.dto.response.ErrorResponse;
 import com.paytmassignment.application.exception.DeclineReason;
 import com.paytmassignment.application.exception.DomainException;
-import com.paytmassignment.infrastructure.metrics.ReservationMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -17,12 +16,6 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
-
-    private final ReservationMetrics metrics;
-
-    public GlobalExceptionHandler(ReservationMetrics metrics) {
-        this.metrics = metrics;
-    }
 
     @ExceptionHandler(DomainException.class)
     public ResponseEntity<ErrorResponse> handleDomain(DomainException ex) {
@@ -41,7 +34,6 @@ public class GlobalExceptionHandler {
                 .findFirst()
                 .map(err -> err.getField() + ": " + err.getDefaultMessage())
                 .orElse("Validation failed");
-        metrics.recordDecline(DeclineReason.VALIDATION);
         return ResponseEntity.badRequest()
                 .body(new ErrorResponse("declined", DeclineReason.VALIDATION.name(), message, MDC.get("request_id")));
     }

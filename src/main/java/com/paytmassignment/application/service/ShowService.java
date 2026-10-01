@@ -19,6 +19,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -26,6 +29,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 @Service
 public class ShowService {
+
+    private static final Logger log = LoggerFactory.getLogger(ShowService.class);
 
     private final ShowRepository showRepository;
     private final SeatRepository seatRepository;
@@ -72,7 +77,14 @@ public class ShowService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                metrics.registerShow(show.getId());
+                try {
+                    metrics.registerShow(show.getId());
+                } catch (RuntimeException ex) {
+                    log.warn(
+                            "observability_failure type=available_seats_gauge show_id={} request_id={}",
+                            show.getId(),
+                            MDC.get("request_id"));
+                }
             }
         });
 

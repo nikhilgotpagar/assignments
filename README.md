@@ -72,8 +72,33 @@ It exercises concurrent hot-seat reservations, concurrent same-key retries, the 
 | `GET` | `/health/live` | Liveness |
 | `GET` | `/health/ready` | Readiness; checks PostgreSQL |
 | `GET` | `/actuator/prometheus` | Prometheus metrics |
+| `GET` | `/logs` | Recent sanitized reservation/business events |
 
 `POST /shows` requires the admin bearer token. Reserve, get-reservation, and cancel endpoints require a valid user bearer token; cancel and get-reservation enforce ownership. `GET /shows/{id}`, health, and metrics are public for evaluator access, and `POST /auth/users` is public so clients can obtain a user token. Missing or invalid credentials on protected routes return 401; a valid non-admin token creating a show returns 403. Reserve requests are all-or-nothing. Reservation identity and cancellation ownership come from the bearer token, not request-body fields. More design detail is in [WRITEUP.md](WRITEUP.md).
+
+## Metrics + Logs
+
+### Metrics
+
+Live endpoint: `https://YOUR-RENDER-APP.onrender.com/actuator/prometheus`
+
+It exposes confirmed reservations, declined reservations by reason, and an available-seat gauge queried from the current PostgreSQL seat state.
+
+```bash
+curl http://localhost:8080/actuator/prometheus
+```
+
+### Logs
+
+Live endpoint: `https://YOUR-RENDER-APP.onrender.com/logs`
+
+This returns up to 500 recent sanitized reservation/business events, newest first. The default response contains the latest 100 events; use `?limit=500` for the maximum.
+
+```bash
+curl http://localhost:8080/logs
+```
+
+Events include timestamp, request ID, event type, show/user/reservation IDs when available, seats, and HTTP status. The endpoint does not expose raw application logs or authentication/database credentials.
 
 ## Deployment
 

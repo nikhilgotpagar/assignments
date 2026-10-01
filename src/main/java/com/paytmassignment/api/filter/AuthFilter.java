@@ -22,7 +22,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class AuthFilter extends OncePerRequestFilter {
 
     private static final Set<String> PUBLIC_PATHS = Set.of(
-            "/auth/users", "/health/live", "/health/ready", "/livez", "/readyz", "/actuator", "/prometheus");
+            "/auth/users", "/health/live", "/health/ready", "/livez", "/readyz", "/logs", "/actuator",
+            "/prometheus");
 
     private final AuthService authService;
 

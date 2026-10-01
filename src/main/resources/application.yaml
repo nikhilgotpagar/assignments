@@ -31,13 +31,13 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,prometheus,info,metrics
+        include: health,prometheus
       base-path: /actuator
   endpoint:
     health:
       probes:
         enabled: true
-      show-details: always
+      show-details: never
     prometheus:
       access: unrestricted
   health:
