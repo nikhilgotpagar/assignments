@@ -49,10 +49,10 @@ public class AuthService implements ApplicationRunner {
     @Transactional(readOnly = true)
     public User requireUserByToken(String token) {
         if (token == null || token.isBlank()) {
-            throw DomainException.forbidden("Missing bearer token");
+            throw DomainException.unauthorized("Missing bearer token");
         }
         return userRepository.findByToken(token)
-                .orElseThrow(() -> DomainException.forbidden("Invalid bearer token"));
+                .orElseThrow(() -> DomainException.unauthorized("Invalid bearer token"));
     }
 
     private String generateToken() {

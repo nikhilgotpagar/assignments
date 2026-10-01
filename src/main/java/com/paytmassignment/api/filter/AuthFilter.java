@@ -21,13 +21,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
 public class AuthFilter extends OncePerRequestFilter {
 
-    private static final Set<String> PUBLIC_PREFIXES = Set.of(
-            "/auth/users",
-            "/health",
-            "/livez",
-            "/readyz",
-            "/actuator",
-            "/prometheus");
+    private static final Set<String> PUBLIC_PATHS = Set.of(
+            "/auth/users", "/health/live", "/health/ready", "/livez", "/readyz", "/actuator", "/prometheus");
 
     private final AuthService authService;
 
@@ -41,10 +36,16 @@ public class AuthFilter extends OncePerRequestFilter {
             return true;
         }
         String path = request.getRequestURI();
-        if ("GET".equalsIgnoreCase(request.getMethod()) && path.matches("/shows/[^/]+")) {
+        if ("POST".equalsIgnoreCase(request.getMethod()) && path.equals("/auth/users")) {
             return true;
         }
-        return PUBLIC_PREFIXES.stream().anyMatch(path::startsWith);
+        if ("GET".equalsIgnoreCase(request.getMethod())) {
+            if (PUBLIC_PATHS.contains(path) || path.startsWith("/actuator/")) {
+                return true;
+            }
+            return path.matches("/shows/[^/]+");
+        }
+        return false;
     }
 
     @Override
@@ -65,8 +66,9 @@ public class AuthFilter extends OncePerRequestFilter {
             response.setStatus(ex.getHttpStatus());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             String requestId = MDC.get("request_id");
+            String error = ex.getHttpStatus() == HttpServletResponse.SC_UNAUTHORIZED ? "unauthorized" : "forbidden";
             response.getWriter().write(
-                    "{\"error\":\"forbidden\",\"reason\":\"FORBIDDEN\",\"message\":\""
+                    "{\"error\":\"" + error + "\",\"reason\":\"" + ex.getReason().name() + "\",\"message\":\""
                             + ex.getMessage()
                             + "\",\"request_id\":\""
                             + (requestId == null ? "" : requestId)

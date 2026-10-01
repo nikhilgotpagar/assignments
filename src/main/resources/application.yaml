@@ -53,7 +53,7 @@ management:
       application: ${spring.application.name}
 
 app:
-  admin-token: ${ADMIN_TOKEN:admin-dev-token-change-me}
+  admin-token: ${ADMIN_TOKEN}
   hold-ttl-seconds: ${HOLD_TTL_SECONDS:900}
   per-user-limit-default: ${PER_USER_LIMIT:4}
   expiry-sweep-ms: ${EXPIRY_SWEEP_MS:5000}

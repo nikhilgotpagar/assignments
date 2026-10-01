@@ -31,6 +31,10 @@ public class DomainException extends RuntimeException {
         return new DomainException(DeclineReason.FORBIDDEN, message, 403);
     }
 
+    public static DomainException unauthorized(String message) {
+        return new DomainException(DeclineReason.UNAUTHORIZED, message, 401);
+    }
+
     public static DomainException badRequest(String message) {
         return new DomainException(DeclineReason.VALIDATION, message, 400);
     }
