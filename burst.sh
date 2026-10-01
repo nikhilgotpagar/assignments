@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_URL="${1:-http://localhost:8080}"
-ADMIN_TOKEN="${ADMIN_TOKEN:-local-compose-admin-token}"
+ADMIN_TOKEN="${ADMIN_TOKEN:-token}"
 HOT_SEAT="${HOT_SEAT:-A1}"
 HOT_USERS="${HOT_USERS:-500}"
 LIMIT_USERS="${LIMIT_USERS:-10}"

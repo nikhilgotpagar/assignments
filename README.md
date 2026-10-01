@@ -6,35 +6,35 @@ Spring Boot JSON API with PostgreSQL-backed seat reservations.
 
 Requirements: Docker with Compose.
 
-Start the app and PostgreSQL:
+1. Start the app and PostgreSQL:
 
 ```bash
 ADMIN_TOKEN=token docker compose up --build -d
 ```
 
-The API is at `http://localhost:8080`. Check that it is ready:
+2. Check readiness:
 
 ```bash
 curl http://localhost:8080/health/ready
 ```
 
-Run the concurrency and correctness checks:
+3. Run the concurrency and correctness checks:
 
 ```bash
-ADMIN_TOKEN=token ./burst.sh http://localhost:8080
+bash ./burst.sh http://localhost:8080
 ```
 
-The burst creates test shows and users that remain in the database. It defaults to 500 hot-seat requests; if your machine has process limits, reduce the concurrency, for example `HOT_USERS=50 LIMIT_USERS=10`. Stop the local services with `docker compose down`.
+The API is available at `http://localhost:8080`. The burst creates test shows and users that remain in the database. It defaults to 500 hot-seat requests; if your machine has process limits, reduce the concurrency, for example `HOT_USERS=50 LIMIT_USERS=10`. Stop the local services with `docker compose down`.
 
 ## Run against Render
 
 Live service: https://paytm-seat-reservation-qiq4.onrender.com
 
-Set the Render service's `ADMIN_TOKEN` environment variable to `token` for this assignment demo. In your terminal, set the same value and run the burst:
+1. Set the Render service's `ADMIN_TOKEN` environment variable to `token`.
+2. From your project directory, run:
 
 ```bash
-export ADMIN_TOKEN=token
-./burst.sh https://paytm-seat-reservation-qiq4.onrender.com
+bash ./burst.sh https://paytm-seat-reservation-qiq4.onrender.com
 ```
 
 The burst creates persistent test data in the Render database. Use the default 500 hot-seat requests only if the machine running the script can support that many concurrent workers; otherwise reduce `HOT_USERS`.
