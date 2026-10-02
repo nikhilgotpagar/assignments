@@ -33,6 +33,10 @@ public class ReservationMetrics implements ApplicationRunner {
         this.confirmed = Counter.builder("reservations_confirmed_total")
                 .description("Reservations successfully confirmed")
                 .register(registry);
+        registerDeclineCounter(DeclineReason.SEAT_TAKEN);
+        registerDeclineCounter(DeclineReason.PER_USER_LIMIT);
+        registerDeclineCounter(DeclineReason.IDEMPOTENT_REPLAY);
+        registerDeclineCounter(DeclineReason.IDEMPOTENCY_KEY_REUSED);
     }
 
     public void recordConfirmed() {
@@ -40,11 +44,7 @@ public class ReservationMetrics implements ApplicationRunner {
     }
 
     public void recordDecline(DeclineReason reason) {
-        declines.computeIfAbsent(reason, r -> Counter.builder("reservations_declined_total")
-                        .description("Reservations declined by reason")
-                        .tag("reason", mapReason(r))
-                        .register(registry))
-                .increment();
+        declines.computeIfAbsent(reason, this::registerDeclineCounter).increment();
     }
 
     public void recordIdempotentReplay() {
@@ -76,5 +76,12 @@ public class ReservationMetrics implements ApplicationRunner {
             case IDEMPOTENCY_KEY_REUSED -> "idempotency_key_reused";
             default -> reason.name().toLowerCase();
         };
+    }
+
+    private Counter registerDeclineCounter(DeclineReason reason) {
+        return Counter.builder("reservations_declined_total")
+                .description("Reservations declined by reason")
+                .tag("reason", mapReason(reason))
+                .register(registry);
     }
 }

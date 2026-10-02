@@ -4,14 +4,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.paytmassignment.api.controller.LogsController;
+import com.paytmassignment.api.advice.GlobalExceptionHandler;
 import com.paytmassignment.application.exception.DomainException;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class ReservationEventBufferTest {
 
@@ -22,6 +27,16 @@ class ReservationEventBufferTest {
         assertTrue(controller.getLogs(100).isEmpty());
         assertThrows(DomainException.class, () -> controller.getLogs(0));
         assertThrows(DomainException.class, () -> controller.getLogs(501));
+    }
+
+    @Test
+    void malformedLimitReturnsBadRequestInsteadOfServerError() throws Exception {
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new LogsController(new ReservationEventBuffer()))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        mvc.perform(get("/logs").param("limit", "not-a-number"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

@@ -5,6 +5,7 @@ BASE_URL="${1:-http://localhost:8080}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-token}"
 HOT_SEAT="${HOT_SEAT:-A1}"
 HOT_USERS="${HOT_USERS:-500}"
+HOT_PARALLELISM="${HOT_PARALLELISM:-500}"
 LIMIT_USERS="${LIMIT_USERS:-10}"
 PER_USER_LIMIT="${PER_USER_LIMIT:-4}"
 SEAT_COUNT="${SEAT_COUNT:-100}"
@@ -42,35 +43,88 @@ echo "    show_id=$SHOW_ID"
 
 echo "==> Creating $HOT_USERS users for hot-seat storm on $HOT_SEAT..."
 mkdir -p "$WORKDIR/tokens"
-for i in $(seq 1 "$HOT_USERS"); do
-  RESP=$(curl -sf -X POST "$BASE_URL/auth/users" \
-    -H "Content-Type: application/json" \
-    -d "{\"display_name\":\"hot-user-$i\"}")
-  python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$RESP" > "$WORKDIR/tokens/hot-$i.token"
-done
+export BASE_URL HOT_USERS WORKDIR
+python3 - <<'PY'
+import concurrent.futures
+import json
+import os
+import urllib.request
+
+base_url = os.environ["BASE_URL"]
+user_count = int(os.environ["HOT_USERS"])
+token_dir = os.path.join(os.environ["WORKDIR"], "tokens")
+
+def create_user(i):
+    body = json.dumps({"display_name": f"hot-user-{i}"}).encode()
+    request = urllib.request.Request(
+        f"{base_url}/auth/users",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        result = json.load(response)
+    with open(os.path.join(token_dir, f"hot-{i}.token"), "w", encoding="utf-8") as token_file:
+        token_file.write(result["token"])
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, user_count)) as pool:
+    list(pool.map(create_user, range(1, user_count + 1)))
+PY
 
 echo "==> Hot-seat storm: $HOT_USERS concurrent reserves for $HOT_SEAT"
 HOT_OUT="$WORKDIR/hot_results.txt"
 : > "$HOT_OUT"
 
-run_hot() {
-  local i="$1"
-  local token
-  token=$(cat "$WORKDIR/tokens/hot-$i.token")
-  local code
-  code=$(curl -s -o "$WORKDIR/hot-$i.body" -w "%{http_code}" -X POST "$BASE_URL/shows/$SHOW_ID/reserve" \
-    -H "Authorization: Bearer $token" \
-    -H "Content-Type: application/json" \
-    -H "X-Request-Id: hot-$i" \
-    -d "{\"seats\":[\"$HOT_SEAT\"],\"idempotency_key\":\"hot-$i\"}")
-  local reason
-  reason=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reason","none"))' "$WORKDIR/hot-$i.body" 2>/dev/null || echo none)
-  echo "$code $reason" >> "$HOT_OUT"
-}
-export -f run_hot
 export BASE_URL SHOW_ID HOT_SEAT WORKDIR HOT_OUT
 
-seq 1 "$HOT_USERS" | xargs -P "$HOT_USERS" -I{} bash -c 'run_hot "$@"' _ {}
+python3 - <<'PY'
+import concurrent.futures
+import json
+import os
+import urllib.error
+import urllib.request
+
+base_url = os.environ["BASE_URL"]
+show_id = os.environ["SHOW_ID"]
+seat = os.environ["HOT_SEAT"]
+user_count = int(os.environ["HOT_USERS"])
+parallelism = max(1, int(os.environ["HOT_PARALLELISM"]))
+token_dir = os.path.join(os.environ["WORKDIR"], "tokens")
+
+def reserve(i):
+    with open(os.path.join(token_dir, f"hot-{i}.token"), encoding="utf-8") as token_file:
+        token = token_file.read()
+    body = json.dumps({"seats": [seat], "idempotency_key": f"hot-{i}"}).encode()
+    request = urllib.request.Request(
+        f"{base_url}/shows/{show_id}/reserve",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Request-Id": f"hot-{i}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            code = response.status
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        code = error.code
+        try:
+            payload = json.load(error)
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+    except Exception:
+        code, payload = 0, {}
+    return i, code, payload.get("reason", "none")
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=min(user_count, parallelism)) as pool:
+    results = sorted(pool.map(reserve, range(1, user_count + 1)))
+with open(os.path.join(os.environ["WORKDIR"], "hot_results.txt"), "w", encoding="utf-8") as output:
+    for _, code, reason in results:
+        output.write(f"{code:03d} {reason}\n")
+PY
 
 HOT_201=$(grep -c '^201 ' "$HOT_OUT" || true)
 HOT_409=$(grep -c '^409 ' "$HOT_OUT" || true)
@@ -225,7 +279,7 @@ PY
 
 echo ""
 echo "==> Metrics snapshot (confirmed / declines)"
-curl -sf "$BASE_URL/actuator/prometheus" | grep -E 'reservations_(confirmed|declined)_total|seats_available' || true
+curl -sf "$BASE_URL/actuator/prometheus" | grep -E 'reservations_(confirmed|declined)_total|seats_available'
 
 echo ""
 echo "DONE show_id=$SHOW_ID"

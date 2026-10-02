@@ -16,6 +16,31 @@ import org.junit.jupiter.api.Test;
 class ReservationMetricsTest {
 
     @Test
+    void registersRequiredDeclineSeriesBeforeAnyDeclinesOccur() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        new ReservationMetrics(registry, mock(SeatRepository.class), mock(ShowRepository.class));
+
+        assertEquals(
+                0.0,
+                registry.get("reservations_declined_total")
+                        .tag("reason", "seat_taken")
+                        .counter()
+                        .count());
+        assertEquals(
+                0.0,
+                registry.get("reservations_declined_total")
+                        .tag("reason", "per_user_limit")
+                        .counter()
+                        .count());
+        assertEquals(
+                0.0,
+                registry.get("reservations_declined_total")
+                        .tag("reason", "idempotent_replay")
+                        .counter()
+                        .count());
+    }
+
+    @Test
     void recordsBusinessCountersAndReplayDoesNotCountAsConfirmation() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         ReservationMetrics metrics = new ReservationMetrics(registry, mock(SeatRepository.class), mock(ShowRepository.class));
